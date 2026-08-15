@@ -65,6 +65,20 @@ class TestIngestAndDetect(unittest.TestCase):
         merchants = [r["merchant_normalized"] for r in self.db.execute("SELECT merchant_normalized FROM subscriptions").fetchall()]
         self.assertNotIn("Whole Foods Mkt", merchants)
 
+    def test_reuploading_identical_data_is_deduplicated(self):
+        # Realistic scenario: user re-exports a statement with an overlapping
+        # date range and uploads it again. Exact-duplicate rows should be
+        # skipped, not inserted a second time.
+        parsed = parse_transactions_csv(SAMPLE_CSV)
+        services.ingest_transactions(self.db, parsed)
+
+        result = services.ingest_transactions(self.db, parse_transactions_csv(SAMPLE_CSV))
+        self.assertEqual(result["transactions_ingested"], 0)
+        self.assertEqual(result["duplicates_skipped"], 9)
+
+        total = self.db.execute("SELECT COUNT(*) AS n FROM transactions").fetchone()["n"]
+        self.assertEqual(total, 9)  # not 18
+
     def test_reingesting_more_data_updates_not_duplicates(self):
         parsed = parse_transactions_csv(SAMPLE_CSV)
         services.ingest_transactions(self.db, parsed)

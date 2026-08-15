@@ -6,7 +6,7 @@ fully unit-testable against an in-memory database with zero Flask/HTTP
 involved (see backend/tests/test_services.py).
 """
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from collections import defaultdict
 
 from app.config import settings, get_insight_provider
@@ -19,19 +19,33 @@ MONTHLY_EQUIV = {"weekly": 4.33, "monthly": 1, "quarterly": 1 / 3, "annual": 1 /
 
 
 def ingest_transactions(db: sqlite3.Connection, parsed: list[ParsedTransaction]) -> dict:
+    # De-dupe against what's already stored (exact date+merchant+amount match).
+    # This matters more than it might look: bank CSV exports very commonly
+    # overlap at the edges (this month's export re-includes the last few days
+    # of last month's), and without this, duplicate same-day rows introduce
+    # spurious 0-day gaps that poison the interval pattern for every affected
+    # merchant on the next detection pass.
+    existing = {
+        (r["txn_date"], r["merchant_normalized"], r["amount"])
+        for r in db.execute("SELECT txn_date, merchant_normalized, amount FROM transactions").fetchall()
+    }
+    new_rows = [p for p in parsed if (p.txn_date.isoformat(), p.merchant_normalized, p.amount) not in existing]
+    duplicates_skipped = len(parsed) - len(new_rows)
+
     db.executemany(
         """INSERT INTO transactions (txn_date, merchant_raw, merchant_normalized, amount, category, account)
            VALUES (?, ?, ?, ?, ?, ?)""",
         [
             (p.txn_date.isoformat(), p.merchant_raw, p.merchant_normalized, p.amount, p.category, p.account)
-            for p in parsed
+            for p in new_rows
         ],
     )
     db.commit()
 
     created, updated = _redetect_subscriptions(db)
     return {
-        "transactions_ingested": len(parsed),
+        "transactions_ingested": len(new_rows),
+        "duplicates_skipped": duplicates_skipped,
         "subscriptions_detected": created,
         "subscriptions_updated": updated,
     }
@@ -70,7 +84,7 @@ def _redetect_subscriptions(db: sqlite3.Connection) -> tuple[int, int]:
                        annualized_cost = ?, updated_at = ?
                    WHERE id = ?""",
                 (d.last_seen.isoformat(), d.amount, d.cadence, d.confidence,
-                 d.annualized_cost, datetime.utcnow().isoformat(), sub_id),
+                 d.annualized_cost, datetime.now(timezone.utc).isoformat(), sub_id),
             )
             if existing["status"] == SubscriptionStatus.ACTIVE.value:
                 _apply_unused_flag(db, sub_id)
@@ -125,7 +139,7 @@ def update_subscription(db: sqlite3.Connection, subscription_id: int, updates: d
             values.append(updates[col])
     if fields:
         fields.append("updated_at = ?")
-        values.append(datetime.utcnow().isoformat())
+        values.append(datetime.now(timezone.utc).isoformat())
         values.append(subscription_id)
         db.execute(f"UPDATE subscriptions SET {', '.join(fields)} WHERE id = ?", values)
         db.commit()

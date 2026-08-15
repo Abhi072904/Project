@@ -46,7 +46,7 @@ monthly("OPENAI CHATGPT SUBSCRIPTION", 20.00, 22, jitter_days=1)
 monthly("ADOBE CREATIVE CLOUD", 54.99, 18, jitter_days=1)
 monthly("GEICO INSURANCE", 142.00, 3, jitter_days=1, jitter_amt=0.0)
 periodic("NYT DIGITAL SUBSCRIPTION", 51.00, date(2025, 8, 2), 91, jitter_days=3)
-periodic("AMAZON PRIME MEMBERSHIP", 139.00, date(2025, 8, 5), 365, jitter_days=2)
+periodic("AMAZON PRIME MEMBERSHIP", 139.00, date(2024, 8, 5), 365, jitter_days=2)  # 3 yearly charges -> meets MIN_OCCURRENCES
 
 # ---- Non-recurring noise: groceries, gas, dining, one-off shopping, rideshare ----
 groceries = ["WHOLE FOODS MKT", "TRADER JOE'S #142", "WEGMANS #33", "SAFEWAY #221"]
