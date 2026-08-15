@@ -79,5 +79,8 @@ def _apply_demo_usage_overrides(db):
 
 
 if __name__ == "__main__":
+    import os
     flask_app = create_app()
-    flask_app.run(host="0.0.0.0", port=8000, debug=True)
+    port = int(os.environ.get("PORT", 8000))
+    debug = os.environ.get("FLASK_DEBUG", "1") == "1"
+    flask_app.run(host="0.0.0.0", port=port, debug=debug)
