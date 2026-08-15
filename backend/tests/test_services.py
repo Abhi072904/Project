@@ -1,7 +1,7 @@
 import sqlite3
 import unittest
 from pathlib import Path
-from datetime import date
+from datetime import date, timedelta
 
 from app import services
 from app.ingestion.csv_parser import parse_transactions_csv
@@ -16,17 +16,26 @@ def make_db() -> sqlite3.Connection:
     return conn
 
 
-SAMPLE_CSV = b"""date,description,amount
-2026-01-05,NETFLIX.COM 866-579-7172,15.99
-2026-02-04,NETFLIX.COM 866-579-7172,15.99
-2026-03-06,NETFLIX.COM 866-579-7172,15.99
-2026-04-05,NETFLIX.COM 866-579-7172,15.99
-2026-01-10,SQ *PLANET FITNESS #4021,24.99
-2026-02-09,SQ *PLANET FITNESS #4021,24.99
-2026-03-11,SQ *PLANET FITNESS #4021,24.99
-2026-01-20,WHOLE FOODS MKT,88.40
-2026-02-14,WHOLE FOODS MKT,52.10
-"""
+def _d(days_ago: int) -> str:
+    """ISO date `days_ago` days before today - keeps fixtures valid no matter
+    when the test suite runs, instead of drifting stale against a hardcoded
+    date (this bit us: the original fixture used fixed Jan-Apr 2026 dates,
+    which quietly became 45+ days old and started tripping the unused-flag
+    logic in tests that never meant to exercise it)."""
+    return (date.today() - timedelta(days=days_ago)).isoformat()
+
+
+SAMPLE_CSV = f"""date,description,amount
+{_d(127)},NETFLIX.COM 866-579-7172,15.99
+{_d(97)},NETFLIX.COM 866-579-7172,15.99
+{_d(67)},NETFLIX.COM 866-579-7172,15.99
+{_d(37)},NETFLIX.COM 866-579-7172,15.99
+{_d(92)},SQ *PLANET FITNESS #4021,24.99
+{_d(62)},SQ *PLANET FITNESS #4021,24.99
+{_d(32)},SQ *PLANET FITNESS #4021,24.99
+{_d(85)},WHOLE FOODS MKT,88.40
+{_d(50)},WHOLE FOODS MKT,52.10
+""".encode()
 
 
 class TestIngestAndDetect(unittest.TestCase):
@@ -60,21 +69,22 @@ class TestIngestAndDetect(unittest.TestCase):
         parsed = parse_transactions_csv(SAMPLE_CSV)
         services.ingest_transactions(self.db, parsed)
 
+        newest_date = _d(7)  # ~30 days after the existing series' last charge (_d(37)) - realistic monthly spacing
         more = parse_transactions_csv(
-            b"date,description,amount\n2026-05-05,NETFLIX.COM 866-579-7172,15.99\n"
+            f"date,description,amount\n{newest_date},NETFLIX.COM 866-579-7172,15.99\n".encode()
         )
         services.ingest_transactions(self.db, more)
 
         subs = self.db.execute("SELECT * FROM subscriptions WHERE display_name = 'Netflix'").fetchall()
         self.assertEqual(len(subs), 1)  # still one row, not a duplicate
-        self.assertEqual(subs[0]["last_seen"], "2026-05-05")
+        self.assertEqual(subs[0]["last_seen"], newest_date)
 
     def test_unused_flag_applied_when_last_used_date_is_old(self):
         parsed = parse_transactions_csv(SAMPLE_CSV)
         services.ingest_transactions(self.db, parsed)
 
-        sub = self.db.execute("SELECT id FROM subscriptions WHERE display_name = 'Sq Planet Fitness'").fetchone()
-        self.db.execute("UPDATE subscriptions SET last_used_date = '2026-01-01' WHERE id = ?", (sub["id"],))
+        sub = self.db.execute("SELECT id FROM subscriptions WHERE display_name = 'Planet Fitness'").fetchone()
+        self.db.execute("UPDATE subscriptions SET last_used_date = ? WHERE id = ?", (_d(90), sub["id"]))
         self.db.commit()
         services._apply_unused_flag(self.db, sub["id"])
 
@@ -114,7 +124,7 @@ class TestAnalyticsSummary(unittest.TestCase):
         self.assertEqual(summary_before["potential_monthly_leak"], 0)
 
         sub = db.execute("SELECT id FROM subscriptions WHERE display_name = 'Netflix'").fetchone()
-        db.execute("UPDATE subscriptions SET last_used_date = '2025-01-01' WHERE id = ?", (sub["id"],))
+        db.execute("UPDATE subscriptions SET last_used_date = ? WHERE id = ?", (_d(90), sub["id"]))
         db.commit()
         services._apply_unused_flag(db, sub["id"])
 

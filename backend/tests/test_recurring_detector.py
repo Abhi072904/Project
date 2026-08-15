@@ -70,6 +70,38 @@ class TestRecurringDetector(unittest.TestCase):
         results = detect_recurring("Planet Fitness", txns)
         self.assertEqual(len(results), 1)
 
+    def test_frequent_repeat_merchant_with_irregular_timing_is_not_a_subscription(self):
+        # Regression test: a grocery store visited ~40 times over a year at
+        # random-ish amounts and no fixed interval. Some pairs will randomly
+        # land within amount-tolerance of each other by pure chance (this is
+        # exactly what happened with the seeded demo data before this fix -
+        # groceries/gas/dining got detected as fake "irregular" subscriptions).
+        import random
+        rng = random.Random(7)
+        txns = []
+        d = date(2026, 1, 1)
+        for _ in range(40):
+            d += timedelta(days=rng.randint(2, 12))
+            txns.append(TxnLike(txn_date=d, amount=round(rng.uniform(28, 145), 2)))
+        results = detect_recurring("Whole Foods Mkt", txns)
+        self.assertEqual(results, [], f"False-positive subscription(s) detected: {results}")
+
+    def test_borderline_low_confidence_match_is_rejected(self):
+        # Passes the average-gap-and-spread band check (27 and 34 day gaps
+        # both fall within the monthly tolerance), but only just - the kind
+        # of thin, wobbly match repeat dining/rideshare spend produces by
+        # coincidence at the minimum occurrence count. Confidence lands at
+        # ~0.4, below the acceptance line, so it should be rejected outright
+        # rather than surfaced as a low-confidence "subscription."
+        base = date(2026, 1, 1)
+        txns = [
+            TxnLike(txn_date=base, amount=33.0),
+            TxnLike(txn_date=base + timedelta(days=27), amount=32.6),
+            TxnLike(txn_date=base + timedelta(days=61), amount=33.4),
+        ]
+        results = detect_recurring("Lyft Ride Thu", txns)
+        self.assertEqual(results, [])
+
     def test_detect_all_sorts_by_annualized_cost_descending(self):
         by_merchant = {
             "Netflix": monthly_series(date(2026, 1, 1), 15.99, 4),

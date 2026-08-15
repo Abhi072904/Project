@@ -30,8 +30,9 @@ _CADENCE_BANDS = [
     (Cadence.ANNUAL, 365, 20),
 ]
 
-MIN_OCCURRENCES = 2
+MIN_OCCURRENCES = 3  # two points can't establish "consistent interval" at all
 AMOUNT_TOLERANCE_PCT = 0.06  # 6% - covers small price bumps / tax variance
+MIN_CONFIDENCE = 0.5  # below this, treat it as noise rather than a subscription
 
 
 @dataclass
@@ -87,8 +88,12 @@ def _classify_cadence(intervals: list[int]) -> tuple[str, float]:
     spread = pstdev(intervals) if len(intervals) > 1 else 0.0
 
     for cadence, expected, tolerance in _CADENCE_BANDS:
-        if abs(avg_gap - expected) <= tolerance:
-            # tighter spread relative to tolerance => higher confidence
+        # Both the average gap AND the spread must fit the band - a pattern
+        # like [5, 55, 30] averages to a plausible 30 days but is not
+        # remotely consistent billing. Occurrence count is never allowed to
+        # compensate for bad timing consistency (that was the bug behind the
+        # false-positive "subscriptions" real grocery/gas spending produced).
+        if abs(avg_gap - expected) <= tolerance and spread <= tolerance:
             consistency = max(0.0, 1 - (spread / max(tolerance, 1)))
             occurrence_boost = min(1.0, len(intervals) / 4)  # more data points = more trust
             confidence = round(0.5 * consistency + 0.5 * occurrence_boost, 2)
@@ -114,8 +119,20 @@ def detect_recurring(
             for i in range(1, len(ordered))
         ]
         cadence, confidence = _classify_cadence(intervals)
-        if cadence == Cadence.IRREGULAR.value and len(ordered) < 3:
-            # two irregular charges is too weak a signal to call it a subscription
+        if confidence < MIN_CONFIDENCE:
+            # A cadence band technically matched, but weakly (borderline avg
+            # gap, thin occurrence count, or both). Real subscriptions in
+            # practice score well above this line; borderline matches are
+            # much more often coincidence in everyday repeat-merchant spend
+            # (same coffee shop, same gas station) than a missed subscription.
+            continue
+        if cadence == Cadence.IRREGULAR.value:
+            # By definition a subscription bills on a regular schedule. Everyday
+            # spending at a repeat merchant (groceries, gas, coffee) will always
+            # rack up 3+ same-merchant charges over months, and some will land
+            # within the amount-tolerance band by pure chance - if the interval
+            # pattern doesn't fit a real cadence, it's not a subscription, no
+            # matter how many occurrences there are.
             continue
 
         results.append(

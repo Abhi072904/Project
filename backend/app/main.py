@@ -62,8 +62,8 @@ def _seed_if_empty():
 
 def _apply_demo_usage_overrides(db):
     overrides = {
-        "Sq Planet Fitness": "2026-06-01",
-        "Pp Peloton Interaktiv": "2026-05-02",
+        "Planet Fitness": "2026-06-01",
+        "Peloton Interaktiv": "2026-05-02",
     }
     for merchant, last_used in overrides.items():
         db.execute(
