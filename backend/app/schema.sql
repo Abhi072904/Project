@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS users (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     email               TEXT    NOT NULL UNIQUE,
     password_hash       TEXT    NOT NULL,
+    has_real_data       INTEGER NOT NULL DEFAULT 0,     -- 0 until they upload their own statement
     created_at          TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 

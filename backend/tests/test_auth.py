@@ -6,6 +6,7 @@ another user's rows through the API - is an HTTP-layer guarantee.
 """
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 
 from app.main import create_app
@@ -99,6 +100,22 @@ class TestAuthAndIsolation(unittest.TestCase):
         row_b = next(r for r in subs_b_after if r["merchant_normalized"] == target["merchant_normalized"])
         self.assertEqual(row_a["status"], "cancelled")
         self.assertEqual(row_b["status"], "active")  # untouched, different row entirely
+
+    def test_new_signup_starts_on_sample_data(self):
+        res = self._signup(self.client, "sample1@example.com")
+        self.assertEqual(res.get_json()["has_real_data"], False)
+        self.assertEqual(self.client.get("/auth/me").get_json()["has_real_data"], False)
+
+    def test_uploading_a_real_file_flips_has_real_data(self):
+        self._signup(self.client, "sample2@example.com")
+        csv_bytes = b"date,description,amount\n2026-08-01,COFFEE SHOP,4.50\n"
+        res = self.client.post(
+            "/transactions/upload",
+            data={"file": (BytesIO(csv_bytes), "statement.csv")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(self.client.get("/auth/me").get_json()["has_real_data"], True)
 
 
 if __name__ == "__main__":

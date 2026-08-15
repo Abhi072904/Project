@@ -80,6 +80,10 @@ export default function App() {
 
   const handleUpload = async (file) => {
     const result = await api.uploadTransactions(file)
+    // The backend flips has_real_data server-side on a successful upload -
+    // update local state immediately so the "sample data" banner disappears
+    // right away instead of waiting on a follow-up /auth/me call.
+    setUser((prev) => (prev ? { ...prev, has_real_data: true } : prev))
     await loadAll()
     return result
   }
@@ -120,6 +124,7 @@ export default function App() {
       loading={loading}
       generatingInsights={generatingInsights}
       user={user}
+      isDemoData={!user.has_real_data}
       onLogout={handleLogout}
       onUpdateSubscription={handleUpdateSubscription}
       onGenerateInsights={handleGenerateInsights}

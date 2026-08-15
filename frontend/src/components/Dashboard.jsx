@@ -3,6 +3,7 @@ import SubscriptionCard from './SubscriptionCard.jsx'
 import SpendChart from './SpendChart.jsx'
 import InsightsFeed from './InsightsFeed.jsx'
 import UploadPanel from './UploadPanel.jsx'
+import DemoDataBanner from './DemoDataBanner.jsx'
 
 export default function Dashboard({
   summary,
@@ -11,6 +12,7 @@ export default function Dashboard({
   loading,
   generatingInsights,
   user,
+  isDemoData,
   onLogout,
   onUpdateSubscription,
   onGenerateInsights,
@@ -35,9 +37,12 @@ export default function Dashboard({
           </button>
         </div>
       )}
+
+      {!loading && isDemoData && <DemoDataBanner />}
+
       <header className="mb-10 flex items-start justify-between gap-6 flex-wrap">
         <HeroLeak summary={summary} flaggedCount={summary?.flagged_count ?? 0} loading={loading} />
-        <div className="w-full md:w-72 shrink-0">
+        <div id="upload-panel" className="w-full md:w-72 shrink-0">
           <UploadPanel onUpload={onUpload} />
         </div>
       </header>

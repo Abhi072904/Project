@@ -36,6 +36,10 @@ def current_user_id() -> int:
     return session["user_id"]
 
 
+def _user_json(row) -> dict:
+    return {"id": row["id"], "email": row["email"], "has_real_data": bool(row["has_real_data"])}
+
+
 @bp.post("/signup")
 def signup():
     body = request.get_json(force=True, silent=True) or {}
@@ -67,7 +71,8 @@ def signup():
     session.clear()
     session["user_id"] = new_user_id
     session.permanent = True
-    return jsonify({"id": new_user_id, "email": email}), 201
+    # A brand-new account always starts on seed data - no query needed.
+    return jsonify({"id": new_user_id, "email": email, "has_real_data": False}), 201
 
 
 @bp.post("/login")
@@ -84,7 +89,7 @@ def login():
     session.clear()
     session["user_id"] = user["id"]
     session.permanent = True
-    return jsonify({"id": user["id"], "email": user["email"]})
+    return jsonify(_user_json(user))
 
 
 @bp.post("/logout")
@@ -98,8 +103,10 @@ def me():
     if "user_id" not in session:
         return jsonify({"detail": "Not logged in."}), 401
     db = get_db()
-    user = db.execute("SELECT id, email FROM users WHERE id = ?", (session["user_id"],)).fetchone()
+    user = db.execute(
+        "SELECT id, email, has_real_data FROM users WHERE id = ?", (session["user_id"],)
+    ).fetchone()
     if not user:
         session.clear()
         return jsonify({"detail": "Not logged in."}), 401
-    return jsonify({"id": user["id"], "email": user["email"]})
+    return jsonify(_user_json(user))

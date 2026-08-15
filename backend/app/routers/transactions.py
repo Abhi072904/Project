@@ -27,6 +27,15 @@ def upload_transactions():
         return jsonify({"detail": "No valid transaction rows found in file."}), 422
 
     result = ingest_transactions(get_db(), current_user_id(), parsed)
+
+    # Flip the flag the first time this user's own file comes through - the
+    # dashboard uses this to know when it can stop showing the "sample data"
+    # banner. Only the real upload path sets it; the internal demo seeding
+    # call at signup never does.
+    db = get_db()
+    db.execute("UPDATE users SET has_real_data = 1 WHERE id = ?", (current_user_id(),))
+    db.commit()
+
     return jsonify(result)
 
 
