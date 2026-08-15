@@ -10,6 +10,8 @@ export default function Dashboard({
   insights,
   loading,
   generatingInsights,
+  user,
+  onLogout,
   onUpdateSubscription,
   onGenerateInsights,
   onUpload,
@@ -22,6 +24,17 @@ export default function Dashboard({
 
   return (
     <div className="max-w-5xl mx-auto px-6 py-10 md:py-14">
+      {user && (
+        <div className="flex items-center justify-end gap-3 mb-4">
+          <span className="font-mono text-xs text-ink-soft">{user.email}</span>
+          <button
+            onClick={onLogout}
+            className="font-mono text-xs uppercase tracking-wide text-stamp hover:underline"
+          >
+            Log out
+          </button>
+        </div>
+      )}
       <header className="mb-10 flex items-start justify-between gap-6 flex-wrap">
         <HeroLeak summary={summary} flaggedCount={summary?.flagged_count ?? 0} loading={loading} />
         <div className="w-full md:w-72 shrink-0">

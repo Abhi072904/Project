@@ -45,7 +45,7 @@ def _parse_date(value: str) -> date:
 def _parse_amount(row: dict) -> float:
     """Handle both a single signed 'amount' column and split debit/credit columns."""
     if "amount" in row and row["amount"]:
-        val = row["amount"].replace("$", "").replace(",", "").strip()
+        val = row["amount"].replace("$", "").replace(",", "").replace(" ", "").strip()
         amt = float(val)
         # Bank exports vary: some show spending as negative, some as positive.
         # We normalize to "positive = money out" since that's what a subscription
@@ -67,7 +67,7 @@ def parse_transactions_csv(file_content: bytes, account_label: str | None = None
     reader.fieldnames = [f.strip().lower() for f in (reader.fieldnames or [])]
 
     date_col = next((c for c in reader.fieldnames if c in ("date", "transaction date", "posted date")), None)
-    desc_col = next((c for c in reader.fieldnames if c in ("description", "merchant", "name")), None)
+    desc_col = next((c for c in reader.fieldnames if c in ("description", "transaction description", "merchant", "name")), None)
     if not date_col or not desc_col:
         raise CSVParseError(
             f"CSV must have a date column and a description/merchant column. Found: {reader.fieldnames}"

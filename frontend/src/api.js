@@ -2,17 +2,33 @@ const BASE = import.meta.env.VITE_API_BASE || '/api';
 
 async function request(path, options = {}) {
   const res = await fetch(`${BASE}${path}`, {
+    // Auth is a cross-site session cookie (frontend and backend live on
+    // different domains in production) - fetch does not send cookies
+    // cross-origin by default, so this is required on every call.
+    credentials: 'include',
     headers: options.body instanceof FormData ? undefined : { 'Content-Type': 'application/json' },
     ...options,
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail || `Request failed: ${res.status}`);
+    const err = new Error(body.detail || `Request failed: ${res.status}`);
+    err.status = res.status;
+    throw err;
   }
   return res.json();
 }
 
 export const api = {
+  signup: (email, password) =>
+    request('/auth/signup', { method: 'POST', body: JSON.stringify({ email, password }) }),
+
+  login: (email, password) =>
+    request('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
+
+  logout: () => request('/auth/logout', { method: 'POST' }),
+
+  me: () => request('/auth/me'),
+
   getAnalyticsSummary: () => request('/analytics/summary'),
 
   getSubscriptions: (status) => request(`/subscriptions${status ? `?status=${status}` : ''}`),

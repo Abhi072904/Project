@@ -1,8 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import { api } from './api.js'
 import Dashboard from './components/Dashboard.jsx'
+import AuthScreen from './components/AuthScreen.jsx'
 
 export default function App() {
+  const [authChecked, setAuthChecked] = useState(false)
+  const [user, setUser] = useState(null)
+
   const [summary, setSummary] = useState(null)
   const [subscriptions, setSubscriptions] = useState([])
   const [insights, setInsights] = useState([])
@@ -11,6 +15,7 @@ export default function App() {
   const [loadError, setLoadError] = useState(null)
 
   const loadAll = useCallback(async () => {
+    setLoading(true)
     try {
       const [summaryRes, subsRes, insightsRes] = await Promise.all([
         api.getAnalyticsSummary(),
@@ -28,14 +33,36 @@ export default function App() {
     }
   }, [])
 
+  // On first load, check whether there's already a valid session (e.g. the
+  // user refreshed the page) before deciding whether to show the login form.
   useEffect(() => {
-    loadAll()
-  }, [loadAll])
+    api
+      .me()
+      .then((u) => setUser(u))
+      .catch(() => setUser(null))
+      .finally(() => setAuthChecked(true))
+  }, [])
+
+  useEffect(() => {
+    if (user) loadAll()
+  }, [user, loadAll])
+
+  const handleAuth = async (mode, email, password) => {
+    const u = mode === 'signup' ? await api.signup(email, password) : await api.login(email, password)
+    setUser(u)
+  }
+
+  const handleLogout = async () => {
+    await api.logout()
+    setUser(null)
+    setSummary(null)
+    setSubscriptions([])
+    setInsights([])
+  }
 
   const handleUpdateSubscription = async (id, updates) => {
     const updated = await api.updateSubscription(id, updates)
     setSubscriptions((prev) => prev.map((s) => (s.id === id ? updated : s)))
-    // status changes shift the leak total and category totals - refresh those
     const summaryRes = await api.getAnalyticsSummary()
     setSummary(summaryRes)
   }
@@ -55,6 +82,14 @@ export default function App() {
     const result = await api.uploadTransactions(file)
     await loadAll()
     return result
+  }
+
+  if (!authChecked) {
+    return <div className="min-h-screen" />
+  }
+
+  if (!user) {
+    return <AuthScreen onAuth={handleAuth} />
   }
 
   if (loadError) {
@@ -84,6 +119,8 @@ export default function App() {
       insights={insights}
       loading={loading}
       generatingInsights={generatingInsights}
+      user={user}
+      onLogout={handleLogout}
       onUpdateSubscription={handleUpdateSubscription}
       onGenerateInsights={handleGenerateInsights}
       onUpload={handleUpload}

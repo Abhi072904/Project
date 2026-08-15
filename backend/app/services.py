@@ -4,6 +4,10 @@ Talks to SQLite directly with parameterized SQL - no ORM. Routers stay thin
 and call into here; every function takes a sqlite3.Connection so this is
 fully unit-testable against an in-memory database with zero Flask/HTTP
 involved (see backend/tests/test_services.py).
+
+Every function here also takes a user_id and every query is scoped by it -
+this is what gives each signed-up user their own private data. There is no
+"global" data anymore; user_id is always the first filter, never optional.
 """
 import sqlite3
 from datetime import date, datetime, timezone
@@ -18,31 +22,31 @@ from app.insights.provider import SpendingContext, SubscriptionSummary
 MONTHLY_EQUIV = {"weekly": 4.33, "monthly": 1, "quarterly": 1 / 3, "annual": 1 / 12, "irregular": 1}
 
 
-def ingest_transactions(db: sqlite3.Connection, parsed: list[ParsedTransaction]) -> dict:
-    # De-dupe against what's already stored (exact date+merchant+amount match).
-    # This matters more than it might look: bank CSV exports very commonly
-    # overlap at the edges (this month's export re-includes the last few days
-    # of last month's), and without this, duplicate same-day rows introduce
-    # spurious 0-day gaps that poison the interval pattern for every affected
-    # merchant on the next detection pass.
+def ingest_transactions(db: sqlite3.Connection, user_id: int, parsed: list[ParsedTransaction]) -> dict:
+    # De-dupe against what's already stored (exact date+merchant+amount match),
+    # scoped to this user only - two users can coincidentally share a
+    # merchant+amount+date without colliding with each other.
     existing = {
         (r["txn_date"], r["merchant_normalized"], r["amount"])
-        for r in db.execute("SELECT txn_date, merchant_normalized, amount FROM transactions").fetchall()
+        for r in db.execute(
+            "SELECT txn_date, merchant_normalized, amount FROM transactions WHERE user_id = ?",
+            (user_id,),
+        ).fetchall()
     }
     new_rows = [p for p in parsed if (p.txn_date.isoformat(), p.merchant_normalized, p.amount) not in existing]
     duplicates_skipped = len(parsed) - len(new_rows)
 
     db.executemany(
-        """INSERT INTO transactions (txn_date, merchant_raw, merchant_normalized, amount, category, account)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+        """INSERT INTO transactions (user_id, txn_date, merchant_raw, merchant_normalized, amount, category, account)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
         [
-            (p.txn_date.isoformat(), p.merchant_raw, p.merchant_normalized, p.amount, p.category, p.account)
+            (user_id, p.txn_date.isoformat(), p.merchant_raw, p.merchant_normalized, p.amount, p.category, p.account)
             for p in new_rows
         ],
     )
     db.commit()
 
-    created, updated = _redetect_subscriptions(db)
+    created, updated = _redetect_subscriptions(db, user_id)
     return {
         "transactions_ingested": len(new_rows),
         "duplicates_skipped": duplicates_skipped,
@@ -51,12 +55,15 @@ def ingest_transactions(db: sqlite3.Connection, parsed: list[ParsedTransaction])
     }
 
 
-def _redetect_subscriptions(db: sqlite3.Connection) -> tuple[int, int]:
-    """Re-run the recurring-charge detector over all transactions and
+def _redetect_subscriptions(db: sqlite3.Connection, user_id: int) -> tuple[int, int]:
+    """Re-run the recurring-charge detector over this user's transactions and
     create/update subscription rows. Idempotent: matches on
     (merchant_normalized, amount-cluster) so re-running after new uploads
     extends existing subscriptions instead of duplicating them."""
-    rows = db.execute("SELECT id, txn_date, merchant_normalized, amount, category FROM transactions").fetchall()
+    rows = db.execute(
+        "SELECT id, txn_date, merchant_normalized, amount, category FROM transactions WHERE user_id = ?",
+        (user_id,),
+    ).fetchall()
 
     by_merchant: dict[str, list[TxnLike]] = defaultdict(list)
     txn_ids_by_merchant: dict[str, list[sqlite3.Row]] = defaultdict(list)
@@ -72,8 +79,8 @@ def _redetect_subscriptions(db: sqlite3.Connection) -> tuple[int, int]:
     for d in detected:
         existing = db.execute(
             """SELECT * FROM subscriptions
-               WHERE merchant_normalized = ? AND amount BETWEEN ? AND ?""",
-            (d.merchant_normalized, d.amount * 0.94, d.amount * 1.06),
+               WHERE user_id = ? AND merchant_normalized = ? AND amount BETWEEN ? AND ?""",
+            (user_id, d.merchant_normalized, d.amount * 0.94, d.amount * 1.06),
         ).fetchone()
 
         if existing:
@@ -82,56 +89,59 @@ def _redetect_subscriptions(db: sqlite3.Connection) -> tuple[int, int]:
                 """UPDATE subscriptions
                    SET last_seen = ?, amount = ?, cadence = ?, confidence = ?,
                        annualized_cost = ?, updated_at = ?
-                   WHERE id = ?""",
+                   WHERE id = ? AND user_id = ?""",
                 (d.last_seen.isoformat(), d.amount, d.cadence, d.confidence,
-                 d.annualized_cost, datetime.now(timezone.utc).isoformat(), sub_id),
+                 d.annualized_cost, datetime.now(timezone.utc).isoformat(), sub_id, user_id),
             )
             if existing["status"] == SubscriptionStatus.ACTIVE.value:
-                _apply_unused_flag(db, sub_id)
+                _apply_unused_flag(db, user_id, sub_id)
             updated += 1
         else:
             category = next((r["category"] for r in txn_ids_by_merchant[d.merchant_normalized]), "Other")
             cur = db.execute(
                 """INSERT INTO subscriptions
-                   (merchant_normalized, display_name, amount, cadence, category,
+                   (user_id, merchant_normalized, display_name, amount, cadence, category,
                     first_seen, last_seen, status, confidence, annualized_cost)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (d.merchant_normalized, d.merchant_normalized, d.amount, d.cadence, category,
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (user_id, d.merchant_normalized, d.merchant_normalized, d.amount, d.cadence, category,
                  d.first_seen.isoformat(), d.last_seen.isoformat(),
                  SubscriptionStatus.ACTIVE.value, d.confidence, d.annualized_cost),
             )
             sub_id = cur.lastrowid
-            _apply_unused_flag(db, sub_id)
+            _apply_unused_flag(db, user_id, sub_id)
             created += 1
 
         for r in txn_ids_by_merchant[d.merchant_normalized]:
             if d.amount * 0.94 <= r["amount"] <= d.amount * 1.06:
                 db.execute(
-                    "UPDATE transactions SET is_recurring = 1, subscription_id = ? WHERE id = ?",
-                    (sub_id, r["id"]),
+                    "UPDATE transactions SET is_recurring = 1, subscription_id = ? WHERE id = ? AND user_id = ?",
+                    (sub_id, r["id"], user_id),
                 )
 
     db.commit()
     return created, updated
 
 
-def _apply_unused_flag(db: sqlite3.Connection, subscription_id: int) -> None:
+def _apply_unused_flag(db: sqlite3.Connection, user_id: int, subscription_id: int) -> None:
     """Flag a subscription if it's gone quiet, based on last_used_date (user-
     reported) falling back to last_seen (last charge date) when unset."""
     row = db.execute(
-        "SELECT last_used_date, last_seen FROM subscriptions WHERE id = ?", (subscription_id,)
+        "SELECT last_used_date, last_seen FROM subscriptions WHERE id = ? AND user_id = ?",
+        (subscription_id, user_id),
     ).fetchone()
+    if not row:
+        return
     reference = date.fromisoformat(row["last_used_date"] or row["last_seen"])
     days_quiet = (date.today() - reference).days
     if days_quiet >= settings.UNUSED_SUBSCRIPTION_DAYS:
         db.execute(
-            "UPDATE subscriptions SET status = ? WHERE id = ?",
-            (SubscriptionStatus.FLAGGED.value, subscription_id),
+            "UPDATE subscriptions SET status = ? WHERE id = ? AND user_id = ?",
+            (SubscriptionStatus.FLAGGED.value, subscription_id, user_id),
         )
         db.commit()
 
 
-def update_subscription(db: sqlite3.Connection, subscription_id: int, updates: dict) -> sqlite3.Row | None:
+def update_subscription(db: sqlite3.Connection, user_id: int, subscription_id: int, updates: dict) -> sqlite3.Row | None:
     fields, values = [], []
     for col in ("status", "last_used_date", "display_name"):
         if updates.get(col) is not None:
@@ -141,14 +151,18 @@ def update_subscription(db: sqlite3.Connection, subscription_id: int, updates: d
         fields.append("updated_at = ?")
         values.append(datetime.now(timezone.utc).isoformat())
         values.append(subscription_id)
-        db.execute(f"UPDATE subscriptions SET {', '.join(fields)} WHERE id = ?", values)
+        values.append(user_id)
+        db.execute(f"UPDATE subscriptions SET {', '.join(fields)} WHERE id = ? AND user_id = ?", values)
         db.commit()
-    return db.execute("SELECT * FROM subscriptions WHERE id = ?", (subscription_id,)).fetchone()
+    return db.execute(
+        "SELECT * FROM subscriptions WHERE id = ? AND user_id = ?", (subscription_id, user_id)
+    ).fetchone()
 
 
-def build_spending_context(db: sqlite3.Connection) -> SpendingContext:
+def build_spending_context(db: sqlite3.Connection, user_id: int) -> SpendingContext:
     subs = db.execute(
-        "SELECT * FROM subscriptions WHERE status != ?", (SubscriptionStatus.CANCELLED.value,)
+        "SELECT * FROM subscriptions WHERE user_id = ? AND status != ?",
+        (user_id, SubscriptionStatus.CANCELLED.value),
     ).fetchall()
 
     summaries, total_monthly = [], 0.0
@@ -178,23 +192,24 @@ def build_spending_context(db: sqlite3.Connection) -> SpendingContext:
     )
 
 
-def generate_and_store_insights(db: sqlite3.Connection) -> list[sqlite3.Row]:
-    context = build_spending_context(db)
+def generate_and_store_insights(db: sqlite3.Connection, user_id: int) -> list[sqlite3.Row]:
+    context = build_spending_context(db, user_id)
     provider = get_insight_provider()
     batch = provider.generate_insights(context)
 
     name_to_id = {
         r["display_name"]: r["id"]
-        for r in db.execute("SELECT id, display_name FROM subscriptions").fetchall()
+        for r in db.execute("SELECT id, display_name FROM subscriptions WHERE user_id = ?", (user_id,)).fetchall()
     }
 
     ids = []
     for gi in batch.insights:
         cur = db.execute(
-            """INSERT INTO insights (subscription_id, insight_type, headline, body,
+            """INSERT INTO insights (user_id, subscription_id, insight_type, headline, body,
                                       potential_monthly_savings, provider)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
+                user_id,
                 name_to_id.get(gi.subscription_name) if gi.subscription_name else None,
                 gi.insight_type, gi.headline, gi.body,
                 gi.potential_monthly_savings, batch.provider_name,
@@ -203,23 +218,26 @@ def generate_and_store_insights(db: sqlite3.Connection) -> list[sqlite3.Row]:
         ids.append(cur.lastrowid)
     db.commit()
 
-    placeholders = ",".join("?" * len(ids)) if ids else "NULL"
+    if not ids:
+        return []
+    placeholders = ",".join("?" * len(ids))
     return db.execute(
-        f"SELECT * FROM insights WHERE id IN ({placeholders}) ORDER BY id", ids
-    ).fetchall() if ids else []
+        f"SELECT * FROM insights WHERE id IN ({placeholders}) AND user_id = ? ORDER BY id",
+        (*ids, user_id),
+    ).fetchall()
 
 
-def analytics_summary(db: sqlite3.Connection) -> dict:
-    context = build_spending_context(db)
+def analytics_summary(db: sqlite3.Connection, user_id: int) -> dict:
+    context = build_spending_context(db, user_id)
     flagged = db.execute(
-        "SELECT amount, cadence FROM subscriptions WHERE status = ?",
-        (SubscriptionStatus.FLAGGED.value,),
+        "SELECT amount, cadence FROM subscriptions WHERE user_id = ? AND status = ?",
+        (user_id, SubscriptionStatus.FLAGGED.value),
     ).fetchall()
     potential_leak = sum(r["amount"] * MONTHLY_EQUIV.get(r["cadence"], 1) for r in flagged)
 
     active_or_flagged = db.execute(
-        "SELECT annualized_cost FROM subscriptions WHERE status != ?",
-        (SubscriptionStatus.CANCELLED.value,),
+        "SELECT annualized_cost FROM subscriptions WHERE user_id = ? AND status != ?",
+        (user_id, SubscriptionStatus.CANCELLED.value),
     ).fetchall()
     total_annualized = sum(r["annualized_cost"] for r in active_or_flagged)
 

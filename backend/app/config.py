@@ -8,6 +8,19 @@ class Settings:
     GCP_LOCATION: str = os.environ.get("GCP_LOCATION", "us-central1")
     UNUSED_SUBSCRIPTION_DAYS: int = int(os.environ.get("UNUSED_SUBSCRIPTION_DAYS", "45"))
 
+    # Signs the session cookie. MUST be set to a long random value in
+    # production (e.g. `python3 -c "import secrets; print(secrets.token_hex(32))"`)
+    # - anyone who has this value can forge login sessions. Falls back to a
+    # fixed dev value locally only so `python3 -m app.main` works out of the box.
+    SECRET_KEY: str = os.environ.get("SECRET_KEY", "dev-only-insecure-secret-change-me")
+
+    # True when running behind HTTPS (Render, Vercel, etc.) - controls the
+    # Secure flag on the session cookie. Cross-site cookies (frontend and
+    # backend on different domains) require Secure + SameSite=None, which
+    # only works over HTTPS. Set FLASK_ENV=production (or IS_PRODUCTION=1) in
+    # the deployed backend's environment variables.
+    IS_PRODUCTION: bool = os.environ.get("IS_PRODUCTION", "0") == "1"
+
 
 settings = Settings()
 
